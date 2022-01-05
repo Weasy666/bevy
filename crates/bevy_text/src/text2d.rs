@@ -1,4 +1,5 @@
 use bevy_asset::Assets;
+use bevy_core::FloatOrd;
 use bevy_ecs::{
     bundle::Bundle,
     entity::Entity,
@@ -87,8 +88,7 @@ pub fn extract_text2d_sprite(
                         * Mat4::from_translation(
                             alignment_offset * scale_factor + text_glyph.position.extend(0.),
                         );
-
-                extracted_sprites.sprites.push(ExtractedSprite {
+                let sprite = ExtractedSprite {
                     transform,
                     color,
                     rect,
@@ -96,7 +96,15 @@ pub fn extract_text2d_sprite(
                     atlas_size,
                     flip_x: false,
                     flip_y: false,
-                });
+                };
+
+                if let Some(bin) = extracted_sprites.sprites.get_mut(&(transform.w_axis[2].ceil() as i32)) {
+                    bin.push(sprite);
+                } else {
+                    let mut bin = Vec::new();
+                    bin.push(sprite);
+                    extracted_sprites.sprites.insert(transform.w_axis[2].ceil() as i32, bin);
+                }
             }
         }
     }

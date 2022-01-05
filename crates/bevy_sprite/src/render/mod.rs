@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, ops::Range};
+use std::{cmp::Ordering, ops::Range, collections::BTreeMap};
 
 use crate::{
     texture_atlas::{TextureAtlas, TextureAtlasSprite},
@@ -165,7 +165,7 @@ pub struct ExtractedSprite {
 
 #[derive(Default)]
 pub struct ExtractedSprites {
-    pub sprites: Vec<ExtractedSprite>,
+    pub sprites: BTreeMap<i32,Vec<ExtractedSprite>>,
 }
 
 #[derive(Default)]
@@ -225,10 +225,11 @@ pub fn extract_sprites(
         if let Some(image) = images.get(handle) {
             let size = image.texture_descriptor.size;
 
-            extracted_sprites.sprites.push(ExtractedSprite {
+            let transform = transform.compute_matrix();
+            let sprite = ExtractedSprite {
                 atlas_size: None,
                 color: sprite.color,
-                transform: transform.compute_matrix(),
+                transform: transform,
                 rect: Rect {
                     min: Vec2::ZERO,
                     max: sprite
@@ -238,7 +239,14 @@ pub fn extract_sprites(
                 flip_x: sprite.flip_x,
                 flip_y: sprite.flip_y,
                 handle: handle.clone_weak(),
-            });
+            };
+            if let Some(bin) = extracted_sprites.sprites.get_mut(&(transform.w_axis[2].ceil() as i32)) {
+                bin.push(sprite);
+            } else {
+                let mut bin = Vec::new();
+                bin.push(sprite);
+                extracted_sprites.sprites.insert(transform.w_axis[2].ceil() as i32, bin);
+            }
         };
     }
     for (computed_visibility, atlas_sprite, transform, texture_atlas_handle) in atlas_query.iter() {
@@ -248,15 +256,23 @@ pub fn extract_sprites(
         if let Some(texture_atlas) = texture_atlases.get(texture_atlas_handle) {
             if images.contains(&texture_atlas.texture) {
                 let rect = texture_atlas.textures[atlas_sprite.index as usize];
-                extracted_sprites.sprites.push(ExtractedSprite {
+                let transform = transform.compute_matrix();
+                let sprite = ExtractedSprite {
                     atlas_size: Some(texture_atlas.size),
                     color: atlas_sprite.color,
-                    transform: transform.compute_matrix(),
+                    transform: transform,
                     rect,
                     flip_x: atlas_sprite.flip_x,
                     flip_y: atlas_sprite.flip_y,
                     handle: texture_atlas.texture.clone_weak(),
-                });
+                };
+                if let Some(bin) = extracted_sprites.sprites.get_mut(&(transform.w_axis[2].ceil() as i32)) {
+                    bin.push(sprite);
+                } else {
+                    let mut bin = Vec::new();
+                    bin.push(sprite);
+                    extracted_sprites.sprites.insert(transform.w_axis[2].ceil() as i32, bin);
+                }
             }
         }
     }
@@ -322,12 +338,19 @@ pub fn prepare_sprites(
 
     // sort first by z and then by handle. this ensures that, when possible, batches span multiple z layers
     // batches won't span z-layers if there is another batch between them
-    extracted_sprites.sprites.sort_by(|a, b| {
-        match FloatOrd(a.transform.w_axis[2]).cmp(&FloatOrd(b.transform.w_axis[2])) {
-            Ordering::Equal => a.handle.cmp(&b.handle),
-            other => other,
-        }
-    });
+    let mut vec = Vec::new();
+    let mut sprites = extracted_sprites.sprites.iter_mut().collect::<Vec<(&i32,&mut Vec<ExtractedSprite>)>>();
+    sprites.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_bin_num, bin_values) in sprites {
+        bin_values.sort_by(|a, b| a.handle.cmp(&b.handle));
+        vec = vec.into_iter().chain(bin_values.into_iter()).collect();
+    }
+    // extracted_sprites.sprites.(|a, b| {
+    //     match FloatOrd(a.transform.w_axis[2]).cmp(&FloatOrd(b.transform.w_axis[2])) {
+    //         Ordering::Equal => a.handle.cmp(&b.handle),
+    //         other => other,
+    //     }
+    // });
 
     let mut start = 0;
     let mut end = 0;
@@ -336,7 +359,7 @@ pub fn prepare_sprites(
     let mut current_batch_handle: Option<Handle<Image>> = None;
     let mut current_batch_colored = false;
     let mut last_z = 0.0;
-    for extracted_sprite in extracted_sprites.sprites.iter() {
+    for extracted_sprite in vec.iter() {
         let colored = extracted_sprite.color != Color::WHITE;
         if let Some(current_batch_handle) = &current_batch_handle {
             if *current_batch_handle != extracted_sprite.handle || current_batch_colored != colored
